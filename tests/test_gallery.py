@@ -91,6 +91,23 @@ class GaleriaTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_choose_folder_button(self):
+        server = gallery.make_server(None, 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://{gallery.HOST}:{server.server_address[1]}"
+        real_picker = gallery.pick_folder
+        try:
+            start = urllib.request.urlopen(base + "/").read().decode()
+            self.assertIn("Choose folder", start)
+            gallery.pick_folder = lambda: None          # window closed without choosing
+            self.assertIn("Choose folder", urllib.request.urlopen(base + "/choose").read().decode())
+            gallery.pick_folder = lambda: self.photos   # folder chosen
+            self.assertIn("December 2019", urllib.request.urlopen(base + "/choose").read().decode())
+        finally:
+            gallery.pick_folder = real_picker
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

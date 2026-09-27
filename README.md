@@ -37,6 +37,10 @@ python gallery.py /path/to/your/photos
 
 Then open <http://127.0.0.1:8000>. Press `Ctrl+C` in the terminal to stop.
 
+You can also start it without a folder (`python gallery.py`) and click
+**Choose folder** in the browser; it opens your computer's own folder window.
+The button is at the top of every page, to switch folders.
+
 The first start reads every photo and can take a while on large folders; later
 starts reuse the saved index and only read what changed. Thumbnails are made
 the first time each one is shown.

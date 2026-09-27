@@ -6,6 +6,7 @@ anywhere and the photos are never modified: thumbnails and the index live in
 the `.cache` folder next to this file.
 
 Usage:
+    python gallery.py                   # then click "Choose folder"
     python gallery.py /path/to/photos
     python gallery.py /path/to/photos --port 8080
 """
@@ -17,6 +18,8 @@ import hashlib
 import html
 import json
 import os
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from http import HTTPStatus
@@ -165,6 +168,48 @@ def thumbnail(photo: dict) -> Path:
     return out
 
 
+# ---------------------------------------------------------------- choosing the folder
+WINDOWS_DIALOG = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "$owner = New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
+    "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+    "$d.Description = 'Choose the folder with your photos';"
+    "if ($d.ShowDialog($owner) -eq 'OK') { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $d.SelectedPath }"
+)
+
+
+def running_in_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def pick_folder() -> Path | None:
+    """Open the computer's own "choose a folder" window. None if cancelled."""
+    if sys.platform == "win32" or running_in_wsl():
+        shell = "powershell.exe" if running_in_wsl() else "powershell"
+        out = subprocess.run([shell, "-NoProfile", "-STA", "-Command", WINDOWS_DIALOG],
+                             capture_output=True, text=True, encoding="utf-8").stdout.strip()
+        if out and running_in_wsl():  # C:\Users\... -> /mnt/c/Users/...
+            out = subprocess.run(["wslpath", "-u", out], capture_output=True, text=True).stdout.strip()
+    elif sys.platform == "darwin":
+        out = subprocess.run(["osascript", "-e", 'POSIX path of (choose folder with prompt '
+                              '"Choose the folder with your photos")'],
+                             capture_output=True, text=True).stdout.strip()
+    elif shutil.which("zenity"):
+        out = subprocess.run(["zenity", "--file-selection", "--directory",
+                              "--title=Choose the folder with your photos"],
+                             capture_output=True, text=True).stdout.strip()
+    else:
+        from tkinter import Tk, filedialog
+        root = Tk()
+        root.withdraw()
+        out = filedialog.askdirectory(title="Choose the folder with your photos")
+        root.destroy()
+    return Path(out) if out and Path(out).is_dir() else None
+
+
 # ---------------------------------------------------------------- pages
 STYLE = f"""
 body {{ margin: 0; font-family: system-ui, sans-serif; background: #16181b; color: #e8e6e3; }}
@@ -183,6 +228,10 @@ h2 {{ margin: 28px 24px 12px; font-size: 18px; color: #b9b6b1; }}
 nav {{ padding: 12px 24px; display: flex; gap: 16px; }}
 nav a {{ color: #9ec1ff; }}
 .note {{ padding: 0 24px; color: #8d8a85; }}
+header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; }}
+.button {{ padding: 8px 14px; border-radius: 6px; background: #2f6fd6; color: #fff;
+           text-decoration: none; font-size: 15px; white-space: nowrap; }}
+.start {{ text-align: center; padding: 80px 24px; }}
 """
 
 
@@ -191,11 +240,15 @@ def page(title: str, body: str) -> bytes:
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title><style>{STYLE}</style></head>
-<body><header><h1><a href="/">{html.escape(TITLE)}</a></h1></header>
+<body><header><h1><a href="/">{html.escape(TITLE)}</a></h1>
+<a class="button" href="/choose">Choose folder</a></header>
 {body}</body></html>""".encode("utf-8")
 
 
-def home_page(lib: Library) -> bytes:
+def home_page(lib: Library | None) -> bytes:
+    if lib is None:
+        return page(TITLE, '<div class="start"><p>Choose the folder with your photos to begin.</p>'
+                           '<p><a class="button" href="/choose">Choose folder</a></p></div>')
     if not lib.photos:
         return page(TITLE, '<p class="note">No photos found in this folder.</p>')
     parts, year = [], None
@@ -248,13 +301,17 @@ def photo_page(lib: Library, i: int) -> bytes:
 
 # ---------------------------------------------------------------- server
 class Handler(BaseHTTPRequestHandler):
-    library: Library
-
     def do_GET(self) -> None:
         parts = unquote(self.path.split("?")[0]).strip("/").split("/")
-        lib = self.library
+        lib = self.server.library
         try:
-            if parts == [""]:
+            if parts == ["choose"]:
+                folder = pick_folder()
+                if folder:
+                    print(f"Reading photos in {folder} ...", flush=True)
+                    self.server.library = Library(folder)
+                return self._redirect("/")
+            if parts == [""] or lib is None:
                 return self._send(home_page(lib), "text/html; charset=utf-8")
             if len(parts) == 2 and parts[0] == "month":
                 body = month_page(lib, parts[1])
@@ -281,33 +338,42 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect(self, where: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", where)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, *args) -> None:  # keep the terminal readable
         pass
 
 
-def make_server(lib: Library, port: int) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"library": lib})
-    return ThreadingHTTPServer((HOST, port), handler)
+def make_server(lib: Library | None, port: int) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((HOST, port), Handler)
+    server.library = lib  # replaced when someone clicks "Choose folder"
+    return server
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Browse a folder of photos by month.")
-    ap.add_argument("folder", help="the folder with your photos")
+    ap.add_argument("folder", nargs="?",
+                    help="the folder with your photos (or choose it in the browser)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--rescan", action="store_true",
                     help="read every photo again, ignoring the saved index")
     args = ap.parse_args(argv)
 
-    root = Path(args.folder).expanduser()
-    if not root.is_dir():
-        sys.exit(f"Folder not found: {root}")
-
-    print(f"Reading photos in {root.resolve()} ...", flush=True)
-    lib = Library(root, rescan=args.rescan)
-    undated = len(lib.months.get("undated", []))
-    print(f"{len(lib.photos)} photos, {len(lib.months) - (1 if undated else 0)} months"
-          + (f", {undated} without a date" if undated else "")
-          + (f", {lib.skipped} skipped (unsupported format)" if lib.skipped else ""))
+    lib = None
+    if args.folder:
+        root = Path(args.folder).expanduser()
+        if not root.is_dir():
+            sys.exit(f"Folder not found: {root}")
+        print(f"Reading photos in {root.resolve()} ...", flush=True)
+        lib = Library(root, rescan=args.rescan)
+        undated = len(lib.months.get("undated", []))
+        print(f"{len(lib.photos)} photos, {len(lib.months) - (1 if undated else 0)} months"
+              + (f", {undated} without a date" if undated else "")
+              + (f", {lib.skipped} skipped (unsupported format)" if lib.skipped else ""))
 
     try:
         server = make_server(lib, args.port)

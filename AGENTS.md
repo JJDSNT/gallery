@@ -25,10 +25,11 @@ run it; read it first.
 | `photo_date`, `find_photos`, `Library` | find photos, read EXIF dates, group by month, cache the index |
 | `thumbnail` | make and cache thumbnails |
 | `home_page`, `month_page`, `photo_page` | HTML pages (inline CSS, no JavaScript) |
+| `pick_folder` | the **Choose folder** button: opens the system's own folder window (PowerShell on Windows and WSL, `osascript` on macOS, `zenity` or Tk on Linux) |
 | `Handler`, `make_server`, `main` | HTTP routes and command line |
 
 Routes: `/`, `/month/<YYYY-MM|undated>`, `/photo/<n>`, `/thumb/<n>`,
-`/original/<n>`. Photos are addressed by index, never by path.
+`/original/<n>`, `/choose`. Photos are addressed by index, never by path.
 
 ## Checking a change
 
